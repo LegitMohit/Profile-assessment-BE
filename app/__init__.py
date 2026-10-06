@@ -1,0 +1,1 @@
+"""AI-Powered International University Student Eligibility Assessment."""
