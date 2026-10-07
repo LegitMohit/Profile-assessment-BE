@@ -151,7 +151,7 @@ async def extract_student_profile(parsed_docs: List[ParsedDocument]) -> StudentP
     # Call Gemini
     client = gemini_service.get_gemini_client()
     response = await client.models.generate_content(
-        model="gemini-2.5-flash",
+        model=gemini_service.GEMINI_MODEL,
         contents=prompt,
         config={
             "system_instruction": gemini_service.GEMINI_SYSTEM_INSTRUCTION_PROFILE_EXTRACTION,

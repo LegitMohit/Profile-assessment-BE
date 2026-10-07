@@ -5,6 +5,10 @@ from google.genai import types
 from app.utils.security import redact_sensitive_info
 
 
+# Get model from environment variable, default to gemini-3.8-flash
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
+
+
 # System instructions for different stages
 GEMINI_SYSTEM_INSTRUCTION_PROFILE_EXTRACTION = """
 You are an expert at extracting structured student profile information from application documents.
@@ -114,7 +118,7 @@ Return structured JSON with all requirements and cite sources.
 
     client = get_gemini_client()
     response = await client.models.generate_content(
-        model="gemini-2.5-flash",
+        model=GEMINI_MODEL,
         contents=prompt,
         config={
             "system_instruction": GEMINI_SYSTEM_INSTRUCTION_REQUIREMENTS,
@@ -177,7 +181,7 @@ Also provide:
 
     client = get_gemini_client()
     response = await client.models.generate_content(
-        model="gemini-2.5-flash",
+        model=GEMINI_MODEL,
         contents=prompt,
         config={
             "system_instruction": GEMINI_SYSTEM_INSTRUCTION_ASSESSMENT,
@@ -231,7 +235,7 @@ The report should be clear, evidence-based, and include the disclaimer that this
 
     client = get_gemini_client()
     response = await client.models.generate_content(
-        model="gemini-2.5-flash",
+        model=GEMINI_MODEL,
         contents=prompt,
         config={
             "system_instruction": GEMINI_SYSTEM_INSTRUCTION_REPORT,

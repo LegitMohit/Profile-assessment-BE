@@ -1,6 +1,7 @@
 """Document parser service."""
 import tempfile
 import os
+import numpy as np
 from pathlib import Path
 from typing import BinaryIO, Optional
 from enum import Enum
@@ -8,7 +9,18 @@ from enum import Enum
 import fitz  # PyMuPDF
 from docx import Document as DocxDocument
 from PIL import Image
-import pytesseract
+
+# Lazy-load easyocr to avoid slow initial import
+_ocr_reader = None
+
+
+def _get_ocr_reader():
+    """Get or create easyocr reader (lazy loaded)."""
+    global _ocr_reader
+    if _ocr_reader is None:
+        import easyocr
+        _ocr_reader = easyocr.Reader(['en'], verbose=False)
+    return _ocr_reader
 
 
 class DocumentType(str, Enum):
@@ -98,18 +110,23 @@ async def parse_pdf(file_content: bytes, filename: str) -> ParsedDocument:
 
 
 async def _ocr_pdf(pdf_path: str) -> str:
-    """Perform OCR on image-based PDF."""
+    """Perform OCR on image-based PDF using easyocr."""
     doc = fitz.open(pdf_path)
     text_parts = []
+    reader = _get_ocr_reader()
 
     for page_num in range(len(doc)):
         page = doc[page_num]
         # Render page as image
         pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))  # 2x zoom for better OCR
         img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-
-        # OCR
-        text = pytesseract.image_to_string(img)
+        
+        # Convert PIL image to numpy array for easyocr
+        img_array = np.array(img)
+        
+        # OCR using easyocr
+        results = reader.readtext(img_array)
+        text = " ".join([result[1] for result in results])
         text_parts.append(text)
 
     doc.close()
@@ -162,14 +179,19 @@ def parse_txt(file_content: bytes, filename: str) -> ParsedDocument:
 
 
 async def parse_image(file_content: bytes, filename: str) -> ParsedDocument:
-    """Parse image document (JPG, PNG) using OCR."""
+    """Parse image document (JPG, PNG) using easyocr."""
     with tempfile.NamedTemporaryFile(suffix=Path(filename).suffix, delete=False) as tmp:
         tmp.write(file_content)
         tmp_path = tmp.name
 
     try:
-        img = Image.open(tmp_path)
-        text = pytesseract.image_to_string(img)
+        img = Image.open(tmp_path).convert("RGB")
+        img_array = np.array(img)
+        
+        reader = _get_ocr_reader()
+        results = reader.readtext(img_array)
+        text = " ".join([result[1] for result in results])
+        
         doc_type = detect_document_type(filename, text)
 
         return ParsedDocument(
@@ -199,7 +221,7 @@ async def parse_document(file_content: bytes, filename: str) -> ParsedDocument:
 
 
 async def parse_documents(files: list[tuple[bytes, str]]) -> list[ParsedDocument]:
-    """Parse multiple documents."""
+    """Parse multiple documents, skipping any that fail."""
     parsed = []
     for file_content, filename in files:
         try:
@@ -207,6 +229,5 @@ async def parse_documents(files: list[tuple[bytes, str]]) -> list[ParsedDocument
             parsed.append(parsed_doc)
         except Exception as e:
             # Log error but continue with other documents
-            print(f"Error parsing {filename}: {e}")
-            raise
+            print(f"Warning: Could not parse {filename}: {e}")
     return parsed
