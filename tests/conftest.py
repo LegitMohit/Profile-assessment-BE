@@ -9,6 +9,9 @@ def mock_gemini_client():
     """Mock Gemini client for testing."""
     with patch("app.services.gemini.get_gemini_client") as mock:
         client = MagicMock()
+        # Use MagicMock (not AsyncMock) for generate_content since
+        # it's called via asyncio.to_thread (synchronous call)
+        client.models.generate_content = MagicMock()
         mock.return_value = client
         yield client
 

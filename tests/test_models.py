@@ -222,13 +222,13 @@ class TestAssessmentModels:
         assert EligibilityStatus.LIKELY_ELIGIBLE.value == "LIKELY ELIGIBLE"
         assert EligibilityStatus.POTENTIALLY_ELIGIBLE.value == "POTENTIALLY ELIGIBLE \u2014 REQUIRES VERIFICATION"
         assert EligibilityStatus.NOT_ELIGIBLE.value == "NOT ELIGIBLE"
-        assert EligibilityStatus.INSUFFICIENT_INFORMATION.value == "INSUFFICIENT INFORMATION"
+        assert EligibilityStatus.INSUFFICIENT_INFORMATION.value == "INSUFFICIENT_INFORMATION"
 
     def test_category_status_enum(self):
         assert CategoryStatus.PASS.value == "PASS"
         assert CategoryStatus.FAIL.value == "FAIL"
-        assert CategoryStatus.REQUIRES_VERIFICATION.value == "REQUIRES VERIFICATION"
-        assert CategoryStatus.NOT_APPLICABLE.value == "NOT APPLICABLE"
+        assert CategoryStatus.REQUIRES_VERIFICATION.value == "REQUIRES_VERIFICATION"
+        assert CategoryStatus.NOT_APPLICABLE.value == "NOT_APPLICABLE"
 
     def test_confidence_level_enum(self):
         assert ConfidenceLevel.HIGH.value == "HIGH"

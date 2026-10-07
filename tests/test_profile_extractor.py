@@ -96,7 +96,7 @@ class TestExtractStudentProfile:
             "research_proposal": None,
         }))
         
-        mock_gemini_client.models.generate_content = AsyncMock(return_value=mock_response)
+        mock_gemini_client.models.generate_content = MagicMock(return_value=mock_response)
         
         profile = await extract_student_profile(sample_parsed_documents)
         
@@ -112,7 +112,7 @@ class TestExtractStudentProfile:
     ):
         # Mock Gemini response with invalid JSON
         mock_response = mock_gemini_response("Not valid JSON")
-        mock_gemini_client.models.generate_content = AsyncMock(return_value=mock_response)
+        mock_gemini_client.models.generate_content = MagicMock(return_value=mock_response)
         
         with pytest.raises(ValueError, match="Failed to parse Gemini response as JSON"):
             await extract_student_profile(sample_parsed_documents)

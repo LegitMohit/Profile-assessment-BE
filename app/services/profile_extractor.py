@@ -1,5 +1,6 @@
 """Profile extractor service."""
 import json
+import asyncio
 from typing import List, Optional
 from app.models.student import (
     StudentProfile,
@@ -150,7 +151,8 @@ async def extract_student_profile(parsed_docs: List[ParsedDocument]) -> StudentP
 
     # Call Gemini
     client = gemini_service.get_gemini_client()
-    response = await client.models.generate_content(
+    response = await asyncio.to_thread(
+        client.models.generate_content,
         model=gemini_service.GEMINI_MODEL,
         contents=prompt,
         config={
@@ -244,7 +246,7 @@ def _dict_to_student_profile(data: dict) -> StudentProfile:
     research_proposal = data.get("research_proposal")
 
     return StudentProfile(
-        nationality=data.get("nationality", "Unknown"),
+        nationality=data.get("nationality") or "Unknown",
         education=education,
         academic_background=academic_background,
         english_language=english_language,

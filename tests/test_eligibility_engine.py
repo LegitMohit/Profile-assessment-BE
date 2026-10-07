@@ -149,7 +149,7 @@ class TestAssessStudentEligibility:
             "recommendation": "The student appears eligible to apply."
         }""")
         
-        mock_gemini_client.models.generate_content = AsyncMock(return_value=mock_response)
+        mock_gemini_client.models.generate_content = MagicMock(return_value=mock_response)
         
         assessment = await assess_student_eligibility(
             student_profile=sample_student_profile,
@@ -176,7 +176,7 @@ class TestAssessStudentEligibility:
         course_req = sample_university_requirements.courses[0]
         
         mock_response = mock_gemini_response("Invalid JSON")
-        mock_gemini_client.models.generate_content = AsyncMock(return_value=mock_response)
+        mock_gemini_client.models.generate_content = MagicMock(return_value=mock_response)
         
         with pytest.raises(ValueError, match="Failed to parse assessment response"):
             await assess_student_eligibility(

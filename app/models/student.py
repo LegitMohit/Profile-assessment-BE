@@ -18,8 +18,8 @@ class AcademicBackground(BaseModel):
 
 
 class EnglishLanguage(BaseModel):
-    test: str
-    overall: str
+    test: str = ""
+    overall: str = ""
     components: Optional[dict] = None
 
 
@@ -51,7 +51,7 @@ class Project(BaseModel):
 
 
 class StudentProfile(BaseModel):
-    nationality: str
+    nationality: str = "Unknown"
     education: List[Education] = []
     academic_background: Optional[AcademicBackground] = None
     english_language: Optional[EnglishLanguage] = None

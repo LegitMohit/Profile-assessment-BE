@@ -1,5 +1,6 @@
 """Gemini AI service."""
 import os
+import asyncio
 from google import genai
 from google.genai import types
 from app.utils.security import redact_sensitive_info
@@ -117,7 +118,8 @@ Return structured JSON with all requirements and cite sources.
 """
 
     client = get_gemini_client()
-    response = await client.models.generate_content(
+    response = await asyncio.to_thread(
+        client.models.generate_content,
         model=GEMINI_MODEL,
         contents=prompt,
         config={
@@ -149,38 +151,40 @@ Student Profile:
 University Requirements:
 {requirements}
 
-Evaluate each category and return structured assessment:
-1. Academic Qualification
-2. Academic Score
-3. Academic Background Match
-4. Course Prerequisites
-5. English Language
-6. Region/Country Eligibility (especially India-specific)
-7. Work/Research Experience
-8. Required Documents
-9. Research Compatibility (if applicable)
-10. Document Consistency
+Return EXACTLY this JSON structure (no extra fields, no different keys):
+{{
+  "overall_status": "INSUFFICIENT_INFORMATION",
+  "confidence": "HIGH",
+  "assessment": [
+    {{"category": "Academic Qualification", "status": "REQUIRES_VERIFICATION", "requirement": "Bachelor's degree (3-4 years)", "student_value": "None provided", "reason": "No education history found in documents", "source": "University Requirements", "confidence": "HIGH"}},
+    {{"category": "Academic Score", "status": "REQUIRES_VERIFICATION", "requirement": "55% or 2:2 equivalent", "student_value": "None provided", "reason": "No academic scores found in documents", "source": "University Requirements", "confidence": "HIGH"}},
+    {{"category": "Academic Background Match", "status": "REQUIRES_VERIFICATION", "requirement": "Business, Management, or related field", "student_value": "Unknown", "reason": "No education history to match against requirements", "source": "University Requirements", "confidence": "HIGH"}},
+    {{"category": "Course Prerequisites", "status": "PASS", "requirement": "None specified", "student_value": "N/A", "reason": "No specific prerequisites required", "source": "University Requirements", "confidence": "HIGH"}},
+    {{"category": "English Language", "status": "REQUIRES_VERIFICATION", "requirement": "IELTS 6.5 overall with 5.5 in all components", "student_value": "None provided", "reason": "No English test scores found", "source": "University Requirements", "confidence": "HIGH"}},
+    {{"category": "Region/Country Eligibility", "status": "REQUIRES_VERIFICATION", "requirement": "Indian 3-year degree with 55%+", "student_value": "Unknown nationality", "reason": "Cannot verify Indian applicant requirements without documents", "source": "University Requirements", "confidence": "HIGH"}},
+    {{"category": "Work/Research Experience", "status": "NOT_APPLICABLE", "requirement": "Not mandatory", "student_value": "None provided", "reason": "Work experience is not a mandatory requirement", "source": "University Requirements", "confidence": "HIGH"}},
+    {{"category": "Required Documents", "status": "FAIL", "requirement": "Passport, Transcript, CV, SOP, LOR", "student_value": "Only 2 images provided", "reason": "Missing required documents: passport, transcript, CV, SOP, LOR", "source": "University Requirements", "confidence": "HIGH"}},
+    {{"category": "Research Compatibility", "status": "NOT_APPLICABLE", "requirement": "Not required for taught programs", "student_value": "N/A", "reason": "MSc International Business Management is a taught program", "source": "University Requirements", "confidence": "HIGH"}},
+    {{"category": "Document Consistency", "status": "REQUIRES_VERIFICATION", "requirement": "Consistent information across documents", "student_value": "Only 2 images, cannot verify consistency", "reason": "Insufficient documents to verify consistency", "source": "University Requirements", "confidence": "HIGH"}}
+  ],
+  "missing_requirements": ["Passport", "Academic Transcript", "CV", "SOP", "LOR", "English Language Test"],
+  "concerns": ["No passport to verify nationality", "No transcript to verify academic scores", "No English test scores", "No supporting documents"],
+  "document_consistency": {{"status": "REQUIRES_VERIFICATION", "issues": ["Insufficient documents to verify consistency"]}},
+  "sources": ["https://www.dmu.ac.uk/course/masters/international-business-management"],
+  "recommendation": "Cannot assess eligibility due to missing required documents. Student must provide passport, academic transcript, CV, SOP, LOR, and English language test scores before a proper assessment can be made. Final admission decision remains with the university."
+}}
 
-For each category, provide:
-- status: PASS/FAIL/REQUIRES_VERIFICATION/NOT_APPLICABLE
-- requirement: what was required
-- student_value: what student has
-- reason: explanation
-- source: requirement source
-- confidence: HIGH/MEDIUM/LOW
-
-Also provide:
-- overall_status: ELIGIBLE/LIKELY_ELIGIBLE/POTENTIALLY_ELIGIBLE/NOT_ELIGIBLE/INSUFFICIENT_INFORMATION
-- confidence: HIGH/MEDIUM/LOW
-- missing_requirements: list
-- concerns: list
-- document_consistency: status and issues
-- sources: list
-- recommendation: string
+CRITICAL RULES:
+- The "assessment" field MUST be an array of objects, NOT an object
+- Each object in assessment MUST have exactly these keys: category, status, requirement, student_value, reason, source, confidence
+- Use ONLY these status values: PASS, FAIL, REQUIRES_VERIFICATION, NOT_APPLICABLE
+- Use ONLY these overall_status values: ELIGIBLE, LIKELY_ELIGIBLE, POTENTIALLY_ELIGIBLE, NOT_ELIGIBLE, INSUFFICIENT_INFORMATION
+- Use ONLY these confidence values: HIGH, MEDIUM, LOW
+- Return ONLY the JSON object, NO extra text, NO markdown, NO explanations
 """
-
     client = get_gemini_client()
-    response = await client.models.generate_content(
+    response = await asyncio.to_thread(
+        client.models.generate_content,
         model=GEMINI_MODEL,
         contents=prompt,
         config={
@@ -192,9 +196,101 @@ Also provide:
 
     import json
     try:
-        return json.loads(response.text)
+        raw_data = json.loads(response.text)
     except json.JSONDecodeError as e:
         raise ValueError(f"Failed to parse assessment response: {e}")
+
+    # Convert model's output format to our expected format
+    return _normalize_assessment_response(raw_data)
+
+
+def _normalize_assessment_response(data: dict) -> dict:
+    """Normalize model's output format to our expected assessment format."""
+    # If already in correct format, return as-is
+    if "assessment" in data and isinstance(data["assessment"], list):
+        return data
+
+    # Handle "evaluations" format (model's preferred format - object)
+    if "evaluations" in data:
+        evaluations = data["evaluations"]
+        assessment = []
+
+        # Convert evaluations object to array
+        category_mapping = {
+            "academic_qualification": "Academic Qualification",
+            "academic_score": "Academic Score",
+            "academic_background_match": "Academic Background Match",
+            "course_prerequisites": "Course Prerequisites",
+            "english_language": "English Language",
+            "region_country_eligibility": "Region/Country Eligibility",
+            "work_research_experience": "Work/Research Experience",
+            "required_documents": "Required Documents",
+            "research_compatibility": "Research Compatibility",
+            "document_consistency": "Document Consistency",
+        }
+
+        for key, value in evaluations.items():
+            category_name = category_mapping.get(key, key.replace("_", " ").title())
+            assessment.append({
+                "category": category_name,
+                "status": value.get("status", "REQUIRES_VERIFICATION"),
+                "requirement": value.get("requirement", ""),
+                "student_value": value.get("student_value", ""),
+                "reason": value.get("reason", ""),
+                "source": value.get("source", ""),
+                "confidence": value.get("confidence", "HIGH"),
+            })
+
+        return {
+            "overall_status": data.get("overall_status", "INSUFFICIENT_INFORMATION"),
+            "confidence": data.get("confidence", "HIGH"),
+            "assessment": assessment,
+            "missing_requirements": data.get("missing_requirements", []),
+            "concerns": data.get("concerns", []),
+            "document_consistency": data.get("document_consistency", {"status": "REQUIRES_VERIFICATION", "issues": []}),
+            "sources": data.get("sources", []),
+            "recommendation": data.get("recommendation", ""),
+        }
+
+    # Handle "assessments" format (model's alternative format - array)
+    if "assessments" in data:
+        assessments = data["assessments"]
+        assessment = []
+
+        for item in assessments:
+            if isinstance(item, dict) and "category" in item:
+                assessment.append({
+                    "category": item.get("category", ""),
+                    "status": item.get("status", "REQUIRES_VERIFICATION"),
+                    "requirement": item.get("requirement", ""),
+                    "student_value": item.get("student_value", ""),
+                    "reason": item.get("reason", ""),
+                    "source": item.get("source", ""),
+                    "confidence": item.get("confidence", "HIGH"),
+                })
+
+        return {
+            "overall_status": data.get("overall_status", "INSUFFICIENT_INFORMATION"),
+            "confidence": data.get("confidence", "HIGH"),
+            "assessment": assessment,
+            "missing_requirements": data.get("missing_requirements", []),
+            "concerns": data.get("concerns", []),
+            "document_consistency": data.get("document_consistency", {"status": "REQUIRES_VERIFICATION", "issues": []}),
+            "sources": data.get("sources", []),
+            "recommendation": data.get("recommendation", ""),
+        }
+
+    # Default fallback
+    return {
+        "overall_status": "INSUFFICIENT_INFORMATION",
+        "confidence": "LOW",
+        "assessment": [],
+        "missing_requirements": [],
+        "concerns": ["Failed to parse model response"],
+        "document_consistency": {"status": "REQUIRES_VERIFICATION", "issues": ["Response format not recognized"]},
+        "sources": [],
+        "recommendation": "Assessment failed due to response parsing error",
+    }
 
 
 async def generate_report(assessment: dict, student_profile: dict, target: dict) -> str:
@@ -234,7 +330,8 @@ The report should be clear, evidence-based, and include the disclaimer that this
 """
 
     client = get_gemini_client()
-    response = await client.models.generate_content(
+    response = await asyncio.to_thread(
+        client.models.generate_content,
         model=GEMINI_MODEL,
         contents=prompt,
         config={
