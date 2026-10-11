@@ -1,13 +1,35 @@
-"""Gemini AI service."""
+"""Gemini AI service with LangChain tracing."""
 import os
 import asyncio
+import json
+import uuid
 from google import genai
 from google.genai import types
 from app.utils.security import redact_sensitive_info
+from app.services.langchain_tracing import get_llm_tracer, init_tracing
+
+# Initialize tracing on module load
+_init_done = False
 
 
-# Get model from environment variable, default to gemini-3.8-flash
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
+def _init_tracing_once():
+    """Initialize tracing once on first use."""
+    global _init_done
+    if not _init_done:
+        init_tracing(
+            log_level=int(os.getenv("LOG_LEVEL", "20")),  # INFO=20
+            log_prompts=os.getenv("LOG_PROMPTS", "true").lower() == "true",
+            log_responses=os.getenv("LOG_RESPONSES", "true").lower() == "true",
+            log_to_file=os.getenv("LOG_TO_FILE", "false").lower() == "true",
+            log_file_path=os.getenv("LOG_FILE_PATH", "llm_calls.log"),
+            langsmith_api_key=os.getenv("LANGSMITH_API_KEY"),
+            langsmith_project=os.getenv("LANGSMITH_PROJECT", "student-eligibility-ai"),
+        )
+        _init_done = True
+
+
+# Get model from environment variable, default to gemini-3.5-flash-lite
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
 
 
 # System instructions for different stages
@@ -94,6 +116,61 @@ def get_gemini_client() -> genai.Client:
     return _gemini_client
 
 
+async def _call_gemini(
+    prompt: str,
+    system_instruction: str,
+    response_mime_type: str = "application/json",
+    temperature: float = 0.1,
+    operation_name: str = "gemini_call",
+) -> str:
+    """Call Gemini with LangChain tracing."""
+    _init_tracing_once()
+    
+    # Get tracer for logging
+    tracer = get_llm_tracer()
+    
+    # Use a unique run_id for tracing
+    run_id = str(uuid.uuid4())
+    
+    # Log the call start
+    tracer.on_llm_start(
+        serialized={"name": GEMINI_MODEL, "model": GEMINI_MODEL},
+        prompts=[prompt],
+        run_id=run_id,
+        tags=[operation_name],
+        metadata={
+            "model": GEMINI_MODEL,
+            "system_instruction": system_instruction[:200] if system_instruction else None,
+            "temperature": temperature,
+            "response_mime_type": response_mime_type,
+        },
+    )
+    
+    try:
+        client = get_gemini_client()
+        response = await asyncio.to_thread(
+            client.models.generate_content,
+            model=GEMINI_MODEL,
+            contents=prompt,
+            config={
+                "system_instruction": system_instruction,
+                "response_mime_type": response_mime_type,
+                "temperature": temperature,
+            }
+        )
+        
+        # Log success
+        from langchain_core.outputs import LLMResult, Generation
+        llm_result = LLMResult(generations=[[Generation(text=response.text)]])
+        tracer.on_llm_end(llm_result, run_id=run_id)
+        
+        return response.text
+        
+    except Exception as e:
+        tracer.on_llm_error(e, run_id=run_id)
+        raise
+
+
 async def extract_requirements(university: str, country: str, course: str, degree_level: str, program_type: str) -> dict:
     """Extract university/course requirements using Gemini."""
     prompt = f"""
@@ -117,21 +194,16 @@ Focus on:
 Return structured JSON with all requirements and cite sources.
 """
 
-    client = get_gemini_client()
-    response = await asyncio.to_thread(
-        client.models.generate_content,
-        model=GEMINI_MODEL,
-        contents=prompt,
-        config={
-            "system_instruction": GEMINI_SYSTEM_INSTRUCTION_REQUIREMENTS,
-            "response_mime_type": "application/json",
-            "temperature": 0.1,
-        }
+    response_text = await _call_gemini(
+        prompt=prompt,
+        system_instruction=GEMINI_SYSTEM_INSTRUCTION_REQUIREMENTS,
+        response_mime_type="application/json",
+        temperature=0.1,
+        operation_name="extract_requirements",
     )
 
-    import json
     try:
-        return json.loads(response.text)
+        return json.loads(response_text)
     except json.JSONDecodeError as e:
         raise ValueError(f"Failed to parse requirements response: {e}")
 
@@ -182,21 +254,17 @@ CRITICAL RULES:
 - Use ONLY these confidence values: HIGH, MEDIUM, LOW
 - Return ONLY the JSON object, NO extra text, NO markdown, NO explanations
 """
-    client = get_gemini_client()
-    response = await asyncio.to_thread(
-        client.models.generate_content,
-        model=GEMINI_MODEL,
-        contents=prompt,
-        config={
-            "system_instruction": GEMINI_SYSTEM_INSTRUCTION_ASSESSMENT,
-            "response_mime_type": "application/json",
-            "temperature": 0.1,
-        }
+
+    response_text = await _call_gemini(
+        prompt=prompt,
+        system_instruction=GEMINI_SYSTEM_INSTRUCTION_ASSESSMENT,
+        response_mime_type="application/json",
+        temperature=0.1,
+        operation_name="assess_eligibility",
     )
 
-    import json
     try:
-        raw_data = json.loads(response.text)
+        raw_data = json.loads(response_text)
     except json.JSONDecodeError as e:
         raise ValueError(f"Failed to parse assessment response: {e}")
 
@@ -329,15 +397,10 @@ Format the report with these sections:
 The report should be clear, evidence-based, and include the disclaimer that this is not an admission guarantee.
 """
 
-    client = get_gemini_client()
-    response = await asyncio.to_thread(
-        client.models.generate_content,
-        model=GEMINI_MODEL,
-        contents=prompt,
-        config={
-            "system_instruction": GEMINI_SYSTEM_INSTRUCTION_REPORT,
-            "temperature": 0.2,
-        }
+    return await _call_gemini(
+        prompt=prompt,
+        system_instruction=GEMINI_SYSTEM_INSTRUCTION_REPORT,
+        response_mime_type="text/plain",
+        temperature=0.2,
+        operation_name="generate_report",
     )
-
-    return response.text
