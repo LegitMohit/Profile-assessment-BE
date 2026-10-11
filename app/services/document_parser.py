@@ -85,24 +85,39 @@ async def parse_pdf(file_content: bytes, filename: str) -> ParsedDocument:
 
     try:
         doc = fitz.open(tmp_path)
+        
+        # Get page count first
+        page_count = len(doc)
+        
         text_parts = []
-        for page_num in range(len(doc)):
+        for page_num in range(page_count):
             page = doc[page_num]
             text_parts.append(page.get_text())
-        doc.close()
-
+        
         full_text = "\n".join(text_parts)
-
+        
         # If PDF is image-based (no text extracted), try OCR
         if not full_text.strip():
             full_text = await _ocr_pdf(tmp_path)
 
+        doc.close()
+        
         doc_type = detect_document_type(filename, full_text)
         return ParsedDocument(
             content=full_text,
             document_type=doc_type,
             filename=filename,
-            pages=len(doc) if 'doc' in dir() else 1,
+            pages=page_count,
+        )
+    except Exception as e:
+        # Log the error but don't raise - let the caller handle it
+        print(f"Error parsing PDF {filename}: {e}")
+        # Return empty document with error info
+        return ParsedDocument(
+            content=f"[Error parsing PDF: {str(e)}]",
+            document_type=detect_document_type(filename, ""),
+            filename=filename,
+            pages=0,
         )
     finally:
         if os.path.exists(tmp_path):
@@ -111,26 +126,30 @@ async def parse_pdf(file_content: bytes, filename: str) -> ParsedDocument:
 
 async def _ocr_pdf(pdf_path: str) -> str:
     """Perform OCR on image-based PDF using easyocr."""
-    doc = fitz.open(pdf_path)
-    text_parts = []
-    reader = _get_ocr_reader()
+    try:
+        doc = fitz.open(pdf_path)
+        text_parts = []
+        reader = _get_ocr_reader()
 
-    for page_num in range(len(doc)):
-        page = doc[page_num]
-        # Render page as image
-        pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))  # 2x zoom for better OCR
-        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-        
-        # Convert PIL image to numpy array for easyocr
-        img_array = np.array(img)
-        
-        # OCR using easyocr
-        results = reader.readtext(img_array)
-        text = " ".join([result[1] for result in results])
-        text_parts.append(text)
+        for page_num in range(len(doc)):
+            page = doc[page_num]
+            # Render page as image
+            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))  # 2x zoom for better OCR
+            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            
+            # Convert PIL image to numpy array for easyocr
+            img_array = np.array(img)
+            
+            # OCR using easyocr
+            results = reader.readtext(img_array)
+            text = " ".join([result[1] for result in results])
+            text_parts.append(text)
 
-    doc.close()
-    return "\n".join(text_parts)
+        doc.close()
+        return "\n".join(text_parts)
+    except Exception as e:
+        print(f"OCR failed for {pdf_path}: {e}")
+        return ""
 
 
 def parse_docx(file_content: bytes, filename: str) -> ParsedDocument:

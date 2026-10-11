@@ -43,7 +43,7 @@ class TestGetUniversityRequirements:
             "source_urls": ["https://example.com"]
         }""")
         
-        mock_gemini_client.models.generate_content = AsyncMock(return_value=mock_response)
+        mock_gemini_client.models.generate_content = MagicMock(return_value=mock_response)
         
         requirements = await get_university_requirements(
             university="University of Birmingham",
@@ -63,7 +63,7 @@ class TestGetUniversityRequirements:
     @pytest.mark.asyncio
     async def test_get_university_requirements_json_error(self, mock_gemini_client, mock_gemini_response):
         mock_response = mock_gemini_response("Invalid JSON")
-        mock_gemini_client.models.generate_content = AsyncMock(return_value=mock_response)
+        mock_gemini_client.models.generate_content = MagicMock(return_value=mock_response)
         
         with pytest.raises(ValueError, match="Failed to parse requirements response"):
             await get_university_requirements(

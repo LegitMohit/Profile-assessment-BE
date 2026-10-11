@@ -6,7 +6,7 @@ from datetime import datetime
 
 class Education(BaseModel):
     qualification: str
-    field: str
+    field: str = ""
     institution: str
     score: Optional[str] = None
     completion_year: Optional[int] = None

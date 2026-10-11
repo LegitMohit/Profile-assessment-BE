@@ -176,9 +176,9 @@ def _dict_to_student_profile(data: dict) -> StudentProfile:
     """Convert extracted dictionary to StudentProfile model."""
     education = [
         Education(
-            qualification=e.get("qualification", ""),
-            field=e.get("field", ""),
-            institution=e.get("institution", ""),
+            qualification=e.get("qualification", "") or "",
+            field=e.get("field", "") or "",
+            institution=e.get("institution", "") or "",
             score=e.get("score"),
             completion_year=e.get("completion_year"),
         )

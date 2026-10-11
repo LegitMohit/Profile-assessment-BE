@@ -79,7 +79,7 @@ class TestGenerateHumanReadableReport:
     ):
         mock_response = MagicMock()
         mock_response.text = "Generated human-readable report"
-        mock_gemini_client.models.generate_content = AsyncMock(return_value=mock_response)
+        mock_gemini_client.models.generate_content = MagicMock(return_value=mock_response)
         
         report = await generate_human_readable_report(
             assessment=sample_assessment_result,
