@@ -1,32 +1,10 @@
-"""Gemini AI service with LangChain tracing."""
+"""Gemini AI service with LangSmith tracing."""
 import os
 import asyncio
 import json
-import uuid
 from google import genai
 from google.genai import types
-from app.utils.security import redact_sensitive_info
-from app.services.langchain_tracing import get_llm_tracer, init_tracing
-
-# Initialize tracing on module load
-_init_done = False
-
-
-def _init_tracing_once():
-    """Initialize tracing once on first use."""
-    global _init_done
-    if not _init_done:
-        init_tracing(
-            log_level=int(os.getenv("LOG_LEVEL", "20")),  # INFO=20
-            log_prompts=os.getenv("LOG_PROMPTS", "true").lower() == "true",
-            log_responses=os.getenv("LOG_RESPONSES", "true").lower() == "true",
-            log_to_file=os.getenv("LOG_TO_FILE", "false").lower() == "true",
-            log_file_path=os.getenv("LOG_FILE_PATH", "llm_calls.log"),
-            langsmith_api_key=os.getenv("LANGSMITH_API_KEY"),
-            langsmith_project=os.getenv("LANGSMITH_PROJECT", "student-eligibility-ai"),
-        )
-        _init_done = True
-
+from langsmith.wrappers import wrap_gemini
 
 # Get model from environment variable, default to gemini-3.5-flash-lite
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
@@ -102,18 +80,25 @@ Generate a human-readable report that is:
 """
 
 
-_gemini_client = None
+_wrapped_client = None
 
 
 def get_gemini_client() -> genai.Client:
-    """Get or create Gemini client."""
-    global _gemini_client
-    if _gemini_client is None:
+    """Get or create wrapped Gemini client with LangSmith tracing."""
+    global _wrapped_client
+    if _wrapped_client is None:
         api_key = os.getenv("GEMINI_API_KEY")
         if not api_key:
             raise ValueError("GEMINI_API_KEY environment variable not set")
-        _gemini_client = genai.Client(api_key=api_key)
-    return _gemini_client
+        base_client = genai.Client(api_key=api_key)
+        _wrapped_client = wrap_gemini(
+            base_client,
+            tracing_extra={
+                "tags": ["gemini", "student-eligibility"],
+                "metadata": {"integration": "google-genai"},
+            },
+        )
+    return _wrapped_client
 
 
 async def _call_gemini(
@@ -121,54 +106,20 @@ async def _call_gemini(
     system_instruction: str,
     response_mime_type: str = "application/json",
     temperature: float = 0.1,
-    operation_name: str = "gemini_call",
 ) -> str:
-    """Call Gemini with LangChain tracing."""
-    _init_tracing_once()
-    
-    # Get tracer for logging
-    tracer = get_llm_tracer()
-    
-    # Use a unique run_id for tracing
-    run_id = str(uuid.uuid4())
-    
-    # Log the call start
-    tracer.on_llm_start(
-        serialized={"name": GEMINI_MODEL, "model": GEMINI_MODEL},
-        prompts=[prompt],
-        run_id=run_id,
-        tags=[operation_name],
-        metadata={
-            "model": GEMINI_MODEL,
-            "system_instruction": system_instruction[:200] if system_instruction else None,
-            "temperature": temperature,
+    """Call Gemini with automatic LangSmith tracing."""
+    client = get_gemini_client()
+    response = await asyncio.to_thread(
+        client.models.generate_content,
+        model=GEMINI_MODEL,
+        contents=prompt,
+        config={
+            "system_instruction": system_instruction,
             "response_mime_type": response_mime_type,
+            "temperature": temperature,
         },
     )
-    
-    try:
-        client = get_gemini_client()
-        response = await asyncio.to_thread(
-            client.models.generate_content,
-            model=GEMINI_MODEL,
-            contents=prompt,
-            config={
-                "system_instruction": system_instruction,
-                "response_mime_type": response_mime_type,
-                "temperature": temperature,
-            }
-        )
-        
-        # Log success
-        from langchain_core.outputs import LLMResult, Generation
-        llm_result = LLMResult(generations=[[Generation(text=response.text)]])
-        tracer.on_llm_end(llm_result, run_id=run_id)
-        
-        return response.text
-        
-    except Exception as e:
-        tracer.on_llm_error(e, run_id=run_id)
-        raise
+    return response.text
 
 
 async def extract_requirements(university: str, country: str, course: str, degree_level: str, program_type: str) -> dict:
@@ -199,7 +150,6 @@ Return structured JSON with all requirements and cite sources.
         system_instruction=GEMINI_SYSTEM_INSTRUCTION_REQUIREMENTS,
         response_mime_type="application/json",
         temperature=0.1,
-        operation_name="extract_requirements",
     )
 
     try:
@@ -260,7 +210,6 @@ CRITICAL RULES:
         system_instruction=GEMINI_SYSTEM_INSTRUCTION_ASSESSMENT,
         response_mime_type="application/json",
         temperature=0.1,
-        operation_name="assess_eligibility",
     )
 
     try:
@@ -402,5 +351,4 @@ The report should be clear, evidence-based, and include the disclaimer that this
         system_instruction=GEMINI_SYSTEM_INSTRUCTION_REPORT,
         response_mime_type="text/plain",
         temperature=0.2,
-        operation_name="generate_report",
     )
