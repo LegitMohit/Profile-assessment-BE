@@ -6,6 +6,10 @@ from google import genai
 from google.genai import types
 from langsmith.wrappers import wrap_gemini
 
+from app.utils.logger import get_logger, traced
+
+logger = get_logger("gemini")
+
 # Get model from environment variable, default to gemini-3.5-flash-lite
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
 
@@ -83,6 +87,7 @@ Generate a human-readable report that is:
 _wrapped_client = None
 
 
+@traced
 def get_gemini_client() -> genai.Client:
     """Get or create wrapped Gemini client with LangSmith tracing."""
     global _wrapped_client
@@ -98,9 +103,13 @@ def get_gemini_client() -> genai.Client:
                 "metadata": {"integration": "google-genai"},
             },
         )
+        logger.info("   Gemini client created (LangSmith tracing enabled, model=%s)", GEMINI_MODEL)
+    else:
+        logger.debug("   Reusing existing Gemini client")
     return _wrapped_client
 
 
+@traced
 async def _call_gemini(
     prompt: str,
     system_instruction: str,
@@ -109,6 +118,14 @@ async def _call_gemini(
 ) -> str:
     """Call Gemini with automatic LangSmith tracing."""
     client = get_gemini_client()
+    logger.info(
+        "   -> Gemini request: model=%s, mime=%s, temperature=%.1f, prompt=%d chars, system=%d chars",
+        GEMINI_MODEL,
+        response_mime_type,
+        temperature,
+        len(prompt),
+        len(system_instruction),
+    )
     response = await asyncio.to_thread(
         client.models.generate_content,
         model=GEMINI_MODEL,
@@ -119,9 +136,11 @@ async def _call_gemini(
             "temperature": temperature,
         },
     )
+    logger.info("   <- Gemini response received: %d chars", len(response.text))
     return response.text
 
 
+@traced
 async def extract_requirements(university: str, country: str, course: str, degree_level: str, program_type: str) -> dict:
     """Extract university/course requirements using Gemini."""
     prompt = f"""
@@ -153,11 +172,15 @@ Return structured JSON with all requirements and cite sources.
     )
 
     try:
-        return json.loads(response_text)
+        parsed = json.loads(response_text)
+        logger.info("   Requirements JSON parsed: %d top-level keys", len(parsed))
+        return parsed
     except json.JSONDecodeError as e:
+        logger.error("Failed to parse requirements response: %s", e)
         raise ValueError(f"Failed to parse requirements response: {e}")
 
 
+@traced
 async def assess_eligibility(student_profile: dict, requirements: dict, university: str, country: str, course: str) -> dict:
     """Assess student eligibility against requirements using Gemini."""
     prompt = f"""
@@ -215,12 +238,21 @@ CRITICAL RULES:
     try:
         raw_data = json.loads(response_text)
     except json.JSONDecodeError as e:
+        logger.error("Failed to parse assessment response: %s", e)
         raise ValueError(f"Failed to parse assessment response: {e}")
 
     # Convert model's output format to our expected format
-    return _normalize_assessment_response(raw_data)
+    normalized = _normalize_assessment_response(raw_data)
+    logger.info(
+        "   Assessment response normalized: status=%s, confidence=%s, %d categor(ies)",
+        normalized.get("overall_status"),
+        normalized.get("confidence"),
+        len(normalized.get("assessment", [])),
+    )
+    return normalized
 
 
+@traced
 def _normalize_assessment_response(data: dict) -> dict:
     """Normalize model's output format to our expected assessment format."""
     # If already in correct format, return as-is
@@ -310,6 +342,7 @@ def _normalize_assessment_response(data: dict) -> dict:
     }
 
 
+@traced
 async def generate_report(assessment: dict, student_profile: dict, target: dict) -> str:
     """Generate human-readable report from assessment."""
     prompt = f"""

@@ -14,6 +14,9 @@ from app.models.student import (
 )
 from app.services.document_parser import ParsedDocument, DocumentType
 from app.services import gemini as gemini_service
+from app.utils.logger import get_logger, traced
+
+logger = get_logger("profile_extractor")
 
 
 PROFILE_EXTRACTION_PROMPT = """
@@ -126,6 +129,7 @@ Rules:
 """
 
 
+@traced
 def prepare_documents_for_prompt(parsed_docs: List[ParsedDocument]) -> str:
     """Prepare parsed documents for the extraction prompt."""
     parts = []
@@ -133,9 +137,11 @@ def prepare_documents_for_prompt(parsed_docs: List[ParsedDocument]) -> str:
         parts.append(f"=== {doc.document_type.value}: {doc.filename} ===")
         parts.append(doc.content[:15000])  # Limit content length
         parts.append("")
+        logger.info("   Prompt section: %s (%s, %d chars, truncated to 15000)", doc.filename, doc.document_type.value, len(doc.content))
     return "\n".join(parts)
 
 
+@traced
 async def extract_student_profile(parsed_docs: List[ParsedDocument]) -> StudentProfile:
     """Extract structured student profile from parsed documents using Gemini."""
     # Group documents by type
@@ -145,12 +151,16 @@ async def extract_student_profile(parsed_docs: List[ParsedDocument]) -> StudentP
             docs_by_type[doc.document_type] = []
         docs_by_type[doc.document_type].append(doc)
 
+    logger.info("   Documents grouped by type: %s", {k.value: len(v) for k, v in docs_by_type.items()})
+
     # Prepare prompt
     documents_text = prepare_documents_for_prompt(parsed_docs)
     prompt = PROFILE_EXTRACTION_PROMPT.format(documents=documents_text)
+    logger.info("   Built profile-extraction prompt (%d chars)", len(prompt))
 
     # Call Gemini
     client = gemini_service.get_gemini_client()
+    logger.info("   Calling Gemini model '%s' for profile extraction...", gemini_service.GEMINI_MODEL)
     response = await asyncio.to_thread(
         client.models.generate_content,
         model=gemini_service.GEMINI_MODEL,
@@ -161,17 +171,31 @@ async def extract_student_profile(parsed_docs: List[ParsedDocument]) -> StudentP
             "temperature": 0.1,
         }
     )
+    logger.info("   Gemini responded with %d chars", len(response.text))
 
     # Parse response
     try:
         profile_data = json.loads(response.text)
     except json.JSONDecodeError as e:
+        logger.error("Failed to parse Gemini response as JSON: %s", e)
         raise ValueError(f"Failed to parse Gemini response as JSON: {e}")
 
     # Convert to StudentProfile model
-    return _dict_to_student_profile(profile_data)
+    profile = _dict_to_student_profile(profile_data)
+    logger.info(
+        "   Profile built: nationality=%s, education=%d, work=%d, research=%d, publications=%d, projects=%d, lor=%d",
+        profile.nationality,
+        len(profile.education),
+        len(profile.work_experience),
+        len(profile.research_experience),
+        len(profile.publications),
+        len(profile.projects),
+        len(profile.lor),
+    )
+    return profile
 
 
+@traced
 def _dict_to_student_profile(data: dict) -> StudentProfile:
     """Convert extracted dictionary to StudentProfile model."""
     education = [
@@ -260,6 +284,7 @@ def _dict_to_student_profile(data: dict) -> StudentProfile:
     )
 
 
+@traced
 def get_passport_nationality(parsed_docs: List[ParsedDocument]) -> Optional[str]:
     """Extract nationality from passport document."""
     for doc in parsed_docs:
@@ -267,6 +292,8 @@ def get_passport_nationality(parsed_docs: List[ParsedDocument]) -> Optional[str]
             content_lower = doc.content.lower()
             # Look for nationality/citizenship indicators
             if "india" in content_lower or "indian" in content_lower:
+                logger.info("   Passport nationality detected: India")
                 return "India"
             # Add more country detection as needed
+    logger.info("   No passport nationality detected")
     return None

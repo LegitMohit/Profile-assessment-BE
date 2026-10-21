@@ -13,7 +13,9 @@ from app.services.eligibility_engine import assess_student_eligibility
 from app.services.report_generator import generate_json_report, generate_human_readable_report, format_report_sections
 from app.services.cleanup import TempFileManager
 from app.utils.security import sanitize_filename
+from app.utils.logger import get_logger, step, traced
 
+logger = get_logger("api.assessment")
 
 router = APIRouter()
 
@@ -26,6 +28,7 @@ MAX_TOTAL_SIZE = 50 * 1024 * 1024
 SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".txt", ".jpg", ".jpeg", ".png"}
 
 
+@traced
 def validate_file(file: UploadFile) -> None:
     """Validate uploaded file."""
     # Check file extension
@@ -40,7 +43,10 @@ def validate_file(file: UploadFile) -> None:
     if not file.filename:
         raise HTTPException(status_code=400, detail="Filename is required")
 
+    logger.info("   Validated file: %s (%s)", file.filename, ext)
 
+
+@traced
 async def read_and_validate_files(files: List[UploadFile]) -> List[tuple[bytes, str]]:
     """Read and validate uploaded files."""
     file_data = []
@@ -66,6 +72,7 @@ async def read_and_validate_files(files: List[UploadFile]) -> List[tuple[bytes, 
             )
 
         file_data.append((content, sanitize_filename(file.filename)))
+        logger.info("   Read %s: %d bytes (running total: %d bytes)", file.filename, file_size, total_size)
 
     return file_data
 
@@ -86,6 +93,10 @@ async def assess_eligibility(
     Upload student documents and specify target university/course.
     Returns a complete eligibility assessment.
     """
+    logger.info("=" * 70)
+    logger.info("API ASSESSMENT REQUEST | university=%s | course=%s | country=%s | level=%s | type=%s | files=%d",
+                university, course, country, degree_level, program_type, len(documents or []))
+
     # Validate required documents
     if not documents:
         raise HTTPException(status_code=400, detail="At least one document is required")
@@ -99,79 +110,92 @@ async def assess_eligibility(
 
     try:
         # Read and validate files
-        file_data = await read_and_validate_files(documents)
+        with step(logger, "STEP 1/7 - Read and validate uploads"):
+            file_data = await read_and_validate_files(documents)
 
         # Parse documents
-        parsed_docs = await parse_documents(file_data)
+        with step(logger, "STEP 2/7 - Parse documents", count=len(file_data)):
+            parsed_docs = await parse_documents(file_data)
 
         # Check document types
-        for doc in parsed_docs:
-            if doc.document_type == DocumentType.PASSPORT:
-                has_passport = True
-            elif doc.document_type == DocumentType.ACADEMIC_TRANSCRIPT:
-                has_transcript = True
-            elif doc.document_type == DocumentType.LOR:
-                lor_count += 1
+        with step(logger, "STEP 3/7 - Detect document types"):
+            for doc in parsed_docs:
+                if doc.document_type == DocumentType.PASSPORT:
+                    has_passport = True
+                elif doc.document_type == DocumentType.ACADEMIC_TRANSCRIPT:
+                    has_transcript = True
+                elif doc.document_type == DocumentType.LOR:
+                    lor_count += 1
 
-        # Validate minimum requirements
-        if not has_passport:
-            raise HTTPException(status_code=400, detail="Passport document is required")
+            logger.info("   Passport: %s | Transcript: %s | LOR count: %d", has_passport, has_transcript, lor_count)
 
-        if not has_transcript:
-            raise HTTPException(status_code=400, detail="Academic transcript/marksheet is required")
+            # Validate minimum requirements
+            if not has_passport:
+                raise HTTPException(status_code=400, detail="Passport document is required")
 
-        # Check for research proposal if MRes
-        if program_type.upper() in ["MRES", "RESEARCH"]:
-            has_proposal = any(d.document_type == DocumentType.RESEARCH_PROPOSAL for d in parsed_docs)
-            if not has_proposal:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Research proposal is required for MRes/Research programs"
-                )
+            if not has_transcript:
+                raise HTTPException(status_code=400, detail="Academic transcript/marksheet is required")
+
+            # Check for research proposal if MRes
+            if program_type.upper() in ["MRES", "RESEARCH"]:
+                has_proposal = any(d.document_type == DocumentType.RESEARCH_PROPOSAL for d in parsed_docs)
+                if not has_proposal:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Research proposal is required for MRes/Research programs"
+                    )
 
         # Extract student profile
-        student_profile = await extract_student_profile(parsed_docs)
+        with step(logger, "STEP 4/7 - Extract student profile (LLM call)"):
+            student_profile = await extract_student_profile(parsed_docs)
 
-        # Override nationality from passport if available
-        passport_nationality = get_passport_nationality(parsed_docs)
-        if passport_nationality:
-            student_profile.nationality = passport_nationality
+            # Override nationality from passport if available
+            passport_nationality = get_passport_nationality(parsed_docs)
+            if passport_nationality:
+                student_profile.nationality = passport_nationality
+                logger.info("   Nationality overridden from passport: %s", passport_nationality)
 
         # Get university requirements
-        requirements = await get_university_requirements(
-            university=university,
-            country=country,
-            course=course,
-            degree_level=degree_level,
-            program_type=program_type,
-            intake=intake,
-        )
-
-        # Get specific course requirements
-        course_req = get_course_requirements(requirements, course)
-        if not course_req:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Requirements not found for course: {course} at {university}"
+        with step(logger, "STEP 5/7 - Retrieve university requirements (LLM call)"):
+            requirements = await get_university_requirements(
+                university=university,
+                country=country,
+                course=course,
+                degree_level=degree_level,
+                program_type=program_type,
+                intake=intake,
             )
 
-        # Assess eligibility
-        assessment = await assess_student_eligibility(
-            student_profile=student_profile,
-            requirements=requirements,
-            course_req=course_req,
-            parsed_docs=parsed_docs,
-            university=university,
-            country=country,
-            course=course,
-            degree_level=degree_level,
-        )
+        # Get specific course requirements
+        with step(logger, "STEP 6/7 - Select course requirements"):
+            course_req = get_course_requirements(requirements, course)
+            if not course_req:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Requirements not found for course: {course} at {university}"
+                )
 
+        # Assess eligibility
+        with step(logger, "STEP 7/7 - Assess eligibility (LLM call)"):
+            assessment = await assess_student_eligibility(
+                student_profile=student_profile,
+                requirements=requirements,
+                course_req=course_req,
+                parsed_docs=parsed_docs,
+                university=university,
+                country=country,
+                course=course,
+                degree_level=degree_level,
+            )
+
+        logger.info("API ASSESSMENT COMPLETE | status=%s | confidence=%s", assessment.overall_status.value, assessment.confidence.value)
         return assessment
 
-    except HTTPException:
+    except HTTPException as exc:
+        logger.error("API ASSESSMENT REJECTED: %s", exc.detail)
         raise
     except Exception as e:
+        logger.exception("API ASSESSMENT FAILED: %s", str(e))
         raise HTTPException(status_code=500, detail=f"Assessment failed: {str(e)}")
     finally:
         # Always cleanup temporary files
@@ -192,6 +216,10 @@ async def assess_with_report(
     """
     Assess eligibility and return both JSON and human-readable report.
     """
+    logger.info("=" * 70)
+    logger.info("API ASSESSMENT+REPORT REQUEST | university=%s | course=%s | format=%s | files=%d",
+                university, course, format, len(documents or []))
+
     # Validate required documents
     if not documents:
         raise HTTPException(status_code=400, detail="At least one document is required")
@@ -200,90 +228,104 @@ async def assess_with_report(
 
     try:
         # Read and validate files
-        file_data = await read_and_validate_files(documents)
+        with step(logger, "STEP 1/8 - Read and validate uploads"):
+            file_data = await read_and_validate_files(documents)
 
         # Parse documents
-        parsed_docs = await parse_documents(file_data)
+        with step(logger, "STEP 2/8 - Parse documents", count=len(file_data)):
+            parsed_docs = await parse_documents(file_data)
 
         # Check document types
-        has_passport = any(d.document_type == DocumentType.PASSPORT for d in parsed_docs)
-        has_transcript = any(d.document_type == DocumentType.ACADEMIC_TRANSCRIPT for d in parsed_docs)
+        with step(logger, "STEP 3/8 - Detect document types"):
+            has_passport = any(d.document_type == DocumentType.PASSPORT for d in parsed_docs)
+            has_transcript = any(d.document_type == DocumentType.ACADEMIC_TRANSCRIPT for d in parsed_docs)
 
-        if not has_passport:
-            raise HTTPException(status_code=400, detail="Passport document is required")
-        if not has_transcript:
-            raise HTTPException(status_code=400, detail="Academic transcript/marksheet is required")
+            logger.info("   Passport: %s | Transcript: %s", has_passport, has_transcript)
 
-        # Check for research proposal if MRes
-        if program_type.upper() in ["MRES", "RESEARCH"]:
-            has_proposal = any(d.document_type == DocumentType.RESEARCH_PROPOSAL for d in parsed_docs)
-            if not has_proposal:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Research proposal is required for MRes/Research programs"
-                )
+            if not has_passport:
+                raise HTTPException(status_code=400, detail="Passport document is required")
+            if not has_transcript:
+                raise HTTPException(status_code=400, detail="Academic transcript/marksheet is required")
+
+            # Check for research proposal if MRes
+            if program_type.upper() in ["MRES", "RESEARCH"]:
+                has_proposal = any(d.document_type == DocumentType.RESEARCH_PROPOSAL for d in parsed_docs)
+                if not has_proposal:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Research proposal is required for MRes/Research programs"
+                    )
 
         # Extract student profile
-        student_profile = await extract_student_profile(parsed_docs)
-        passport_nationality = get_passport_nationality(parsed_docs)
-        if passport_nationality:
-            student_profile.nationality = passport_nationality
+        with step(logger, "STEP 4/8 - Extract student profile (LLM call)"):
+            student_profile = await extract_student_profile(parsed_docs)
+            passport_nationality = get_passport_nationality(parsed_docs)
+            if passport_nationality:
+                student_profile.nationality = passport_nationality
+                logger.info("   Nationality overridden from passport: %s", passport_nationality)
 
         # Get university requirements
-        requirements = await get_university_requirements(
-            university=university,
-            country=country,
-            course=course,
-            degree_level=degree_level,
-            program_type=program_type,
-            intake=intake,
-        )
-
-        course_req = get_course_requirements(requirements, course)
-        if not course_req:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Requirements not found for course: {course} at {university}"
+        with step(logger, "STEP 5/8 - Retrieve university requirements (LLM call)"):
+            requirements = await get_university_requirements(
+                university=university,
+                country=country,
+                course=course,
+                degree_level=degree_level,
+                program_type=program_type,
+                intake=intake,
             )
 
+        with step(logger, "STEP 6/8 - Select course requirements"):
+            course_req = get_course_requirements(requirements, course)
+            if not course_req:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Requirements not found for course: {course} at {university}"
+                )
+
         # Assess eligibility
-        assessment = await assess_student_eligibility(
-            student_profile=student_profile,
-            requirements=requirements,
-            course_req=course_req,
-            parsed_docs=parsed_docs,
-            university=university,
-            country=country,
-            course=course,
-            degree_level=degree_level,
-        )
-
-        # Generate reports
-        json_report = generate_json_report(assessment)
-
-        if format.lower() == "text":
-            text_report = format_report_sections(assessment)
-            return {
-                "json": json_report,
-                "text_report": text_report,
-            }
-        else:
-            human_report = await generate_human_readable_report(
-                assessment=assessment,
+        with step(logger, "STEP 7/8 - Assess eligibility (LLM call)"):
+            assessment = await assess_student_eligibility(
                 student_profile=student_profile,
+                requirements=requirements,
+                course_req=course_req,
+                parsed_docs=parsed_docs,
                 university=university,
                 country=country,
                 course=course,
                 degree_level=degree_level,
             )
-            return {
-                "json": json_report,
-                "text_report": human_report,
-            }
 
-    except HTTPException:
+        # Generate reports
+        with step(logger, "STEP 8/8 - Generate reports", format=format):
+            json_report = generate_json_report(assessment)
+
+            if format.lower() == "text":
+                text_report = format_report_sections(assessment)
+                logger.info("   Using deterministic text formatter")
+                return {
+                    "json": json_report,
+                    "text_report": text_report,
+                }
+            else:
+                human_report = await generate_human_readable_report(
+                    assessment=assessment,
+                    student_profile=student_profile,
+                    university=university,
+                    country=country,
+                    course=course,
+                    degree_level=degree_level,
+                )
+                return {
+                    "json": json_report,
+                    "text_report": human_report,
+                }
+
+    except HTTPException as exc:
+        logger.error("API ASSESSMENT+REPORT REJECTED: %s", exc.detail)
         raise
     except Exception as e:
+        logger.exception("API ASSESSMENT+REPORT FAILED: %s", str(e))
         raise HTTPException(status_code=500, detail=f"Assessment failed: {str(e)}")
     finally:
         temp_manager.cleanup()

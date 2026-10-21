@@ -2,13 +2,20 @@
 from app.models.assessment import AssessmentResult
 from app.models.student import StudentProfile
 from app.services.gemini import generate_report
+from app.utils.logger import get_logger, traced
+
+logger = get_logger("report_generator")
 
 
+@traced
 def generate_json_report(assessment: AssessmentResult) -> dict:
     """Generate JSON report from assessment result."""
-    return assessment.model_dump(mode="json")
+    report = assessment.model_dump(mode="json")
+    logger.info("   JSON report generated (%d top-level keys)", len(report))
+    return report
 
 
+@traced
 async def generate_human_readable_report(
     assessment: AssessmentResult,
     student_profile: StudentProfile,
@@ -28,9 +35,11 @@ async def generate_human_readable_report(
     assessment_dict = assessment.model_dump(mode="json")
 
     report = await generate_report(assessment_dict, student_dict, target_dict)
+    logger.info("   Human-readable report generated (%d chars)", len(report))
     return report
 
 
+@traced
 def format_report_sections(assessment: AssessmentResult) -> str:
     """Format assessment into structured text report (fallback without Gemini)."""
     lines = []
@@ -131,4 +140,5 @@ def format_report_sections(assessment: AssessmentResult) -> str:
     )
     lines.append("")
 
+    logger.info("   Text report formatted: %d line(s), %d assessment categor(ies)", len(lines), len(assessment.assessment))
     return "\n".join(lines)

@@ -14,8 +14,12 @@ from app.models.assessment import (
 )
 from app.services.gemini import assess_eligibility
 from app.services.document_parser import ParsedDocument, DocumentType
+from app.utils.logger import get_logger, traced
+
+logger = get_logger("eligibility_engine")
 
 
+@traced
 async def assess_student_eligibility(
     student_profile: StudentProfile,
     requirements: UniversityRequirements,
@@ -29,6 +33,7 @@ async def assess_student_eligibility(
     """Assess student eligibility against requirements."""
     # Convert student profile to dict for Gemini
     student_dict = student_profile.model_dump()
+    logger.info("   Student payload prepared: nationality=%s, education entries=%d", student_profile.nationality, len(student_profile.education))
 
     # Convert requirements to dict
     requirements_dict = {
@@ -47,6 +52,7 @@ async def assess_student_eligibility(
         "india_specific": requirements.india_specific,
         "source_urls": requirements.source_urls,
     }
+    logger.info("   Requirements payload prepared: %d course(s), %d source url(s)", len(requirements_dict["courses"]), len(requirements_dict["source_urls"]))
 
     # Get assessment from Gemini
     assessment_dict = await assess_eligibility(
@@ -58,7 +64,7 @@ async def assess_student_eligibility(
     )
 
     # Convert to AssessmentResult model
-    return _dict_to_assessment_result(
+    result = _dict_to_assessment_result(
         assessment_dict,
         student_profile,
         university,
@@ -67,8 +73,18 @@ async def assess_student_eligibility(
         degree_level,
         parsed_docs,
     )
+    logger.info(
+        "   Assessment built: status=%s, confidence=%s, categories=%d, missing=%d, concerns=%d",
+        result.overall_status.value,
+        result.confidence.value,
+        len(result.assessment),
+        len(result.missing_requirements),
+        len(result.concerns),
+    )
+    return result
 
 
+@traced
 def _dict_to_assessment_result(
     data: dict,
     student_profile: StudentProfile,
@@ -91,6 +107,12 @@ def _dict_to_assessment_result(
             source=cat.get("source"),
             confidence=ConfidenceLevel(cat.get("confidence", "MEDIUM")),
         ))
+        logger.info(
+            "   Category: %-32s %s (confidence: %s)",
+            cat.get("category", ""),
+            cat.get("status", "REQUIRES_VERIFICATION"),
+            cat.get("confidence", "MEDIUM"),
+        )
 
     # Document consistency
     doc_consistency = data.get("document_consistency", {})
@@ -137,6 +159,7 @@ def _dict_to_assessment_result(
     )
 
 
+@traced
 def check_document_consistency(parsed_docs: list[ParsedDocument], student_profile: StudentProfile) -> DocumentConsistency:
     """Check consistency across documents."""
     issues = []
@@ -164,6 +187,7 @@ def check_document_consistency(parsed_docs: list[ParsedDocument], student_profil
     return DocumentConsistency(status=status, issues=issues)
 
 
+@traced
 def determine_overall_status(categories: list[AssessmentCategory]) -> EligibilityStatus:
     """Determine overall eligibility status from category assessments."""
     has_fail = any(c.status == CategoryStatus.FAIL for c in categories)

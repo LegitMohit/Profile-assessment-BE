@@ -5,6 +5,10 @@ import shutil
 from typing import List
 from contextlib import contextmanager
 
+from app.utils.logger import get_logger, traced
+
+logger = get_logger("cleanup")
+
 
 class TempFileManager:
     """Manages temporary files and ensures cleanup."""
@@ -36,22 +40,26 @@ class TempFileManager:
         self.add_dir(path)
         return path
 
+    @traced
     def cleanup(self):
         """Clean up all registered temporary files and directories."""
+        logger.info("   Cleaning up %d temp file(s) and %d temp dir(s)", len(self.temp_files), len(self.temp_dirs))
         for filepath in self.temp_files:
             try:
                 if os.path.exists(filepath):
                     os.unlink(filepath)
+                    logger.info("   Removed temp file: %s", filepath)
             except Exception as e:
                 # Log but don't raise - cleanup should be best effort
-                print(f"Warning: Failed to cleanup temp file {filepath}: {e}")
+                logger.warning("Warning: Failed to cleanup temp file %s: %s", filepath, e)
 
         for dirpath in self.temp_dirs:
             try:
                 if os.path.exists(dirpath):
                     shutil.rmtree(dirpath)
+                    logger.info("   Removed temp dir: %s", dirpath)
             except Exception as e:
-                print(f"Warning: Failed to cleanup temp dir {dirpath}: {e}")
+                logger.warning("Warning: Failed to cleanup temp dir %s: %s", dirpath, e)
 
         self.temp_files.clear()
         self.temp_dirs.clear()

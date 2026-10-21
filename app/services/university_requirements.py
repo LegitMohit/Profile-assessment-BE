@@ -7,8 +7,12 @@ from app.models.requirements import (
     EnglishRequirement,
 )
 from app.services.gemini import extract_requirements
+from app.utils.logger import get_logger, traced
+
+logger = get_logger("university_requirements")
 
 
+@traced
 async def get_university_requirements(
     university: str,
     country: str,
@@ -18,6 +22,7 @@ async def get_university_requirements(
     intake: Optional[str] = None,
 ) -> UniversityRequirements:
     """Retrieve university/course requirements using Gemini."""
+    logger.info("   Requesting requirements: %s | %s | %s | %s | %s | intake=%s", university, country, course, degree_level, program_type, intake)
     raw_requirements = await extract_requirements(
         university=university,
         country=country,
@@ -25,10 +30,14 @@ async def get_university_requirements(
         degree_level=degree_level,
         program_type=program_type,
     )
+    logger.info("   Raw requirements received: %d top-level keys", len(raw_requirements))
 
-    return _parse_requirements(raw_requirements, university, country, course, degree_level, program_type)
+    requirements = _parse_requirements(raw_requirements, university, country, course, degree_level, program_type)
+    logger.info("   Parsed %d course requirement(s), %d general requirement(s)", len(requirements.courses), len(requirements.general_requirements))
+    return requirements
 
 
+@traced
 def _parse_requirements(
     raw: dict,
     university: str,
@@ -82,10 +91,16 @@ def _parse_requirements(
     )
 
 
+@traced
 def get_course_requirements(requirements: UniversityRequirements, course: str) -> Optional[CourseRequirement]:
     """Get specific course requirements from university requirements."""
     for cr in requirements.courses:
         if cr.course_name.lower() == course.lower():
+            logger.info("   Exact course match: %s", cr.course_name)
             return cr
     # Fallback to first course if exact match not found
-    return requirements.courses[0] if requirements.courses else None
+    if requirements.courses:
+        logger.warning("   No exact match for '%s', falling back to first course: %s", course, requirements.courses[0].course_name)
+        return requirements.courses[0]
+    logger.error("   No course requirements available for '%s'", course)
+    return None

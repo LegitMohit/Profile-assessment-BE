@@ -49,6 +49,26 @@ python run.py
 uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
+## Logging
+
+Every step of the assessment flow is logged to the console with the executing
+function, so the progress of a run can be followed in real time:
+
+```
+21:20:50 | INFO | assessment.main       | -> STEP 4/9 - Parse documents | count=7
+21:20:50 | INFO | assessment.document_parser | -> parse_pdf(...)
+21:20:50 | INFO | assessment.document_parser |    PDF 'transcript.pdf' opened: 6 page(s)
+21:20:50 | INFO | assessment.gemini      |    -> Gemini request: model=gemini-3.5-flash-lite, prompt=5668 chars
+21:20:50 | INFO | assessment.main       | <- STEP 4/9 - Parse documents completed in 145308ms
+```
+
+- `->` marks the start of a step, `<-` its completion, `!!` a failure (with elapsed time)
+- `LOG_LEVEL` environment variable controls verbosity: `DEBUG`, `INFO` (default), `WARNING`, `ERROR`
+
+```bash
+LOG_LEVEL=DEBUG python run.py
+```
+
 ## API Endpoints
 
 - `GET /health` - Health check
