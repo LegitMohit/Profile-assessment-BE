@@ -1,30 +1,23 @@
 """Run script for the application."""
-import asyncio
 import os
 from dotenv import load_dotenv
 
 # Load environment variables before any other imports
 load_dotenv()
 
-from app.main import run_auto_assessment, DOCUMENTS_DIR
+from app.main import DOCUMENTS_DIR
 from app.utils.logger import get_logger
 
 logger = get_logger("run")
 
 
 def main():
-    """Run auto-assessment on documents before starting server."""
+    """Start server without auto-assessment."""
     logger.info("=" * 70)
     logger.info("Student Eligibility AI - Starting Server")
     logger.info("=" * 70)
     logger.info("Documents folder: %s", DOCUMENTS_DIR)
-    logger.info("Target University: De Montfort University")
-    logger.info("Target Course: MSc International Business Management")
     logger.info("=" * 70)
-
-    # Run auto-assessment before starting server
-    logger.info("Running auto-assessment before server start...")
-    asyncio.run(run_auto_assessment())
 
     # Start the server
     import uvicorn
